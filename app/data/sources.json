@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.0",
+  "sources": [
+    {
+      "id": "jpl-horizons",
+      "name": "JPL Horizons",
+      "category": "ephemerides",
+      "access": "Public REST API (GET and POST)",
+      "status": "integrated",
+      "documentation_url": "https://ssd-api.jpl.nasa.gov/doc/horizons.html",
+      "used_for": "Topocentric Sun and Earth altitude/azimuth samples from a lunar surface observer.",
+      "notes": "No API key required. The MVP requests OBSERVER tables with QUANTITIES='4' from CENTER='coord@301'. Results are sampled, not interpolated."
+    },
+    {
+      "id": "lroc-quickmap",
+      "name": "LROC QuickMap / Lunaserv",
+      "category": "topography and imagery",
+      "access": "Public OGC WMS plus web viewer",
+      "status": "integrated_map_layers",
+      "documentation_url": "https://wms.im-ldi.com/lunaserv.html",
+      "used_for": "Visual map layers and topography context for lunar sites.",
+      "notes": "QuickMap moved to https://quickmap.lroc.im-ldi.com. The public WMS is https://wms.im-ldi.com/lroc/wms. Numeric DEM layers are not queryable for elevation via GetFeatureInfo, so the API does not claim point elevations from WMS."
+    },
+    {
+      "id": "nasa-moon-trek",
+      "name": "NASA Moon Trek",
+      "category": "topography and imagery",
+      "access": "OGC WMTS plus Trek catalog REST services",
+      "status": "integrated_map_layers",
+      "documentation_url": "https://trek.nasa.gov/tiles/apidoc/trekAPI.html?body=moon",
+      "used_for": "WMTS basemap tiles and topography layer context.",
+      "notes": "Tiles follow https://trek.nasa.gov/tiles/Moon/{projection}/{layer}/1.0.0/... . The MVP ships a curated verified layer catalog instead of downloading the full live catalog on every request."
+    },
+    {
+      "id": "csa-moon-exploration",
+      "name": "CSA Moon Exploration",
+      "category": "reference",
+      "access": "Web content",
+      "status": "not_integrated",
+      "documentation_url": "https://www.asc-csa.gc.ca/eng/astronomy/moon-exploration/",
+      "used_for": "Background and educational reference only.",
+      "notes": "No public programmatic API was identified. It is intentionally not queried at runtime."
+    },
+    {
+      "id": "naif-spice",
+      "name": "NAIF SPICE",
+      "category": "ephemerides",
+      "access": "SPICE kernels and toolkit",
+      "status": "planned",
+      "documentation_url": "https://naif.jpl.nasa.gov/naif/",
+      "used_for": "Future high-fidelity scientific engine.",
+      "notes": "spiceypy and kernels are not installed in the MVP. The engine interface is ready for a future SPICE implementation."
+    },
+    {
+      "id": "pds-geosciences",
+      "name": "NASA PDS Geosciences Node",
+      "category": "topography data archives",
+      "access": "PDS data archives",
+      "status": "planned",
+      "documentation_url": "https://pds-geosciences.wustl.edu/",
+      "used_for": "Future local DEM ingestion and terrain-horizon modelling.",
+      "notes": "No runtime archive ingestion is implemented in the MVP."
+    }
+  ]
+}
