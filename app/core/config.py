@@ -1,7 +1,11 @@
-from pathlib import Path
+from __future__ import annotations
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import json
+from pathlib import Path
+from typing import Annotated, Any
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 def _env_file() -> str | None:
@@ -22,11 +26,14 @@ class Settings(BaseSettings):
     app_description: str = (
         "LUNARIS - Lunar Landing Site Navigator. API for comparing lunar sites and landing dates."
     )
-    debug: bool = True
+    debug: bool = False
+    host: str = "0.0.0.0"
+    port: int = 8000
     api_v1_prefix: str = "/api/v1"
     log_level: str = "INFO"
-
-    cors_origins: list[str] = Field(
+    # Comma-separated list or JSON array. Example:
+    # CORS_ORIGINS=https://app.vercel.app,http://localhost:3000
+    cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "http://localhost:3000",
             "http://localhost:5173",
@@ -35,8 +42,10 @@ class Settings(BaseSettings):
     )
 
     scientific_engine: str = "geometric"
-    scientific_ephemeris_provider: str = "mock"  # mock | horizons/horizons-observer | spice | horizons-vectors
-    spice_kernel_paths: str | list[str] = Field(default_factory=list)
+    scientific_ephemeris_provider: str = (
+        "mock"  # mock | horizons/horizons-observer | spice | horizons-vectors
+    )
+    spice_kernel_paths: Annotated[str | list[str], NoDecode] = Field(default_factory=list)
 
     max_analysis_span_days: int = 35
     max_analysis_samples: int = 5000
@@ -44,6 +53,13 @@ class Settings(BaseSettings):
     ephemeris_cache_ttl_seconds: int = 300
     analysis_store_ttl_seconds: int = 1800
     analysis_store_max_entries: int = 256
+
+    # Basic request protection (reverse proxy/tunnel should still enforce limits).
+    max_request_body_bytes: int = 1_000_000
+    rate_limit_enabled: bool = True
+    rate_limit_requests: int = 120
+    rate_limit_window_seconds: int = 60
+    trust_proxy_headers: bool = False
 
     horizons_base_url: str = "https://ssd.jpl.nasa.gov/api/horizons.api"
     horizons_timeout_seconds: float = 45.0
@@ -65,6 +81,48 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        "CORS_ORIGINS must be a JSON array or a comma-separated list of origins."
+                    ) from exc
+                if not isinstance(parsed, list):
+                    raise ValueError("CORS_ORIGINS JSON value must be a list.")
+                return [str(item).strip() for item in parsed if str(item).strip()]
+            return [item.strip() for item in raw.split(",") if item.strip()]
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return value
+
+    @field_validator("spice_kernel_paths", mode="before")
+    @classmethod
+    def parse_spice_kernel_paths(cls, value: Any) -> Any:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    parsed = [item.strip() for item in raw.split(",") if item.strip()]
+                return parsed if isinstance(parsed, list) else [str(parsed)]
+            return [item.strip() for item in raw.split(",") if item.strip()]
+        return value
 
 
 settings = Settings()

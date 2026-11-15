@@ -1,0 +1,22 @@
+# Example Cloudflare Named Tunnel configuration for LUNARIS backend.
+# DO NOT commit real credentials, tunnel IDs, or tokens.
+#
+# Steps (summary):
+# 1. cloudflared tunnel login
+# 2. cloudflared tunnel create lunaris-backend
+# 3. Copy the generated credentials JSON path/tunnel ID below
+# 4. cloudflared tunnel route dns lunaris-backend api.<your-domain>
+# 5. cloudflared tunnel --config cloudflared/config.yml run
+#
+# This forwards ONLY the local API. Do not expose PostgreSQL/Redis.
+
+tunnel: <TUNNEL_UUID>
+credentials-file: /home/<user>/.cloudflared/<TUNNEL_UUID>.json
+
+ingress:
+  - hostname: api.example.com
+    service: http://localhost:8000
+    originRequest:
+      connectTimeout: 30s
+      noTLSVerify: false
+  - service: http_status:404
