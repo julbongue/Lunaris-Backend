@@ -38,3 +38,8 @@ class UpstreamTimeoutError(UpstreamServiceError):
 class EngineUnavailableError(LunarisError):
     status_code = 501
     code = "engine_unavailable"
+
+
+class DatabaseUnavailableError(LunarisError):
+    status_code = 503
+    code = "database_unavailable"

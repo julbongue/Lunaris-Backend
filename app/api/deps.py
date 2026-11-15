@@ -21,6 +21,7 @@ from app.services.engine.ephemeris_provider import (
 )
 from app.services.engine.scientific_adapter import ScientificAdapter
 from app.services.ephemeris import EphemerisService
+from app.services.lunar_sites import LunarSiteRepository
 from app.services.sites import SiteService
 from app.services.sources import SourceService
 from app.services.topography import TopographyService
@@ -30,6 +31,15 @@ from app.services.types import EphemerisBundle
 @lru_cache
 def get_site_service() -> SiteService:
     return SiteService.from_file()
+
+
+@lru_cache
+def get_lunar_sites_repository() -> LunarSiteRepository:
+    return LunarSiteRepository(
+        settings.database_url,
+        table_name=settings.lunar_sites_table,
+        pool_pre_ping=settings.database_pool_pre_ping,
+    )
 
 
 @lru_cache

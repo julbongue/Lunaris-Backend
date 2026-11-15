@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     analysis_store_ttl_seconds: int = 1800
     analysis_store_max_entries: int = 256
 
+    database_url: str | None = None
+    lunar_sites_table: str = "lunar_sites"
+    database_pool_pre_ping: bool = True
+
     horizons_base_url: str = "https://ssd.jpl.nasa.gov/api/horizons.api"
     horizons_timeout_seconds: float = 45.0
     horizons_max_retries: int = 1
