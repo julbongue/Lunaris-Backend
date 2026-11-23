@@ -21,6 +21,42 @@ O objectivo do MVP é permitir comparar locais e datas de aterragem na Lua, sobr
 
 ```text
 app/
+├── api/
+│   ├── deps.py                  # injecção de dependências FastAPI
+│   └── v1/
+│       ├── router.py
+│       └── endpoints/
+│           ├── health.py
+│           ├── sites.py         # locais curados + coordenadas personalizadas
+│           ├── analysis.py      # análise de iluminação/visibilidade
+│           ├── scenarios.py     # comparação de cenários
+│           ├── topography.py    # catálogo de camadas cartográficas
+│           └── sources.py       # estado das fontes externas
+├── core/
+│   ├── cache.py                 # cache TTL em memória
+│   ├── config.py                # pydantic-settings
+│   └── exceptions.py            # erros de domínio -> respostas HTTP
+├── data/
+│   ├── sites.json               # locais lunares curados
+│   ├── topography_layers.json   # camadas WMS/WMTS verificadas
+│   └── sources.json             # fontes e estado de integração
+├── integrations/
+│   ├── horizons/                # cliente + parser do JPL Horizons
+│   ├── lroc/                    # construtor de URLs do WMS LROC/Lunaserv
+│   └── moontrek/                # construtor de URLs do WMTS Moon Trek
+├── schemas/                     # modelos Pydantic de entrada/saída
+├── services/
+│   ├── engine/                  # interface do motor científico + baseline
+│   ├── sites.py
+│   ├── lunar_sites.py           # repositório PostgreSQL (tabela lunar_sites)
+│   ├── site_comparison.py       # matriz comparativa e recomendação
+│   ├── ephemeris.py
+│   ├── analysis.py
+│   ├── analysis_store.py
+│   ├── comparison.py
+│   ├── topography.py
+│   └── sources.py
+└── main.py
 ├── api/                     # rotas FastAPI e dependências
 ├── core/                    # configuração, cache, excepções
 ├── data/                    # dados locais curados (sites, layers, sources)
@@ -95,6 +131,20 @@ Regras implementadas:
 - Métodos explícitos permitidos: `GET, POST, PUT, PATCH, DELETE, OPTIONS`.
 - Headers permitidos via CORS: `*` (adequado para preflight típico de `Content-Type`, `Authorization`, etc.).
 
+| Método | Rota | Descrição |
+| --- | --- | --- |
+| `GET` | `/api/v1/health` | Estado do serviço e motor activo. |
+| `GET` | `/api/v1/sites` | Lista de locais curados. Parâmetros: `region`, `south_polar_only`. |
+| `GET` | `/api/v1/sites/database` | Locais lunares lidos da tabela PostgreSQL `lunar_sites`. |
+| `POST` | `/api/v1/sites/compare` | Compara locais da tabela PostgreSQL e devolve matriz, diferenças e recomendação. |
+| `GET` | `/api/v1/sites/{site_id}` | Detalhes de um local. |
+| `POST` | `/api/v1/sites/resolve` | Normaliza coordenadas lunares personalizadas (não persiste). |
+| `POST` | `/api/v1/analysis` | Analisa um local e intervalo temporal. |
+| `GET` | `/api/v1/analysis/{analysis_id}` | Recupera uma análise em cache (TTL). |
+| `POST` | `/api/v1/scenarios/compare` | Compara 2..6 cenários (`MAX_COMPARISON_SCENARIOS`). |
+| `GET` | `/api/v1/topography/layers` | Catálogo de camadas WMS/WMTS verificadas. |
+| `POST` | `/api/v1/topography/context` | URLs de mapa e contexto topográfico para um local. |
+| `GET` | `/api/v1/sources` | Fontes externas e estado de integração. |
 ## Arranque local
 
 ### Opção A — Uvicorn directo
@@ -197,6 +247,19 @@ curl https://api.example.com/api/v1/health
 
 ## Endpoints principais
 
+| Dependência | Justificação |
+| --- | --- |
+| `fastapi` | Framework da API e OpenAPI. |
+| `uvicorn[standard]` | Servidor ASGI. |
+| `pydantic` | Validação e serialização dos contratos da API. |
+| `pydantic-settings` | Configuração por ambiente/`.env`. |
+| `httpx` | Cliente HTTP assíncrono para o JPL Horizons. |
+| `SQLAlchemy` | Acesso à base PostgreSQL (tabela `lunar_sites`). |
+| `psycopg2-binary` | Driver PostgreSQL usado pelo SQLAlchemy. |
+| `pandas` | Apenas ETL: escrita dos dados iniciais com `DataFrame.to_sql` (`data_pipeline/requirements.txt`). |
+| `python-dotenv` | Apenas ETL: leitura do `.env` pelo script de seed. |
+| `pytest` | Testes automatizados. |
+| `ruff` | Lint e formatação. |
 | Método | Rota | Descrição |
 | --- | --- | --- |
 | `GET` | `/` | Entrada da API |
@@ -241,6 +304,136 @@ Medidas implementadas/configuráveis:
 - Endpoints e contratos existentes preservados; não desactivar autenticação existente (nenhuma autenticação específica foi removida/introduzida fora do existente).
 
 > **Nota:** o backend expõe apenas HTTP na porta configurada; PostgreSQL/Redis não fazem parte deste serviço e não devem ser expostos.
+
+### PostgreSQL (`lunar_sites`)
+
+O endpoint `GET /api/v1/sites/database` lê a tabela `lunar_sites`, criada por `data_pipeline/etl/load_lunar_data.py`, diretamente da base PostgreSQL/Supabase. A configuração é feita por variáveis de ambiente:
+
+- `DATABASE_URL`: URL de ligação PostgreSQL. Caracteres reservados na password podem ser percent-encoded (`@` → `%40`), mas a API e o ETL também aceitam `@` não codificado.
+- `LUNAR_SITES_TABLE`: nome da tabela (default `lunar_sites`; aceita `schema.tabela`).
+- `DATABASE_POOL_PRE_PING`: valida ligações antes de as usar (default `true`).
+
+#### Popular a tabela com dados iniciais
+
+O script `data_pipeline/etl/load_lunar_data.py` carrega a Cratera Shackleton, a
+Malapert Mountain e a Cratera Faustini. Instale as dependências exclusivas do
+ETL e execute-o a partir da raiz do repositório:
+
+```bash
+python -m pip install -r data_pipeline/requirements.txt
+python -m data_pipeline.etl.load_lunar_data
+```
+
+O script lê `DATABASE_URL` do ambiente ou do `.env`, converte-a para uma
+`URL` do SQLAlchemy com o driver `postgresql+psycopg2` e grava os dados com
+`pandas.DataFrame.to_sql`. Como a URL é construída com `URL.create`, caracteres
+reservados na password (`@`, `/`, `:`, `?`, `#`, `%`) são codificados
+correctamente e não precisam de ser escapados à mão. Se `DATABASE_URL` não
+existir, o script usa `POSTGRES_HOST` e `POSTGRES_PASSWORD` (opcionalmente
+`POSTGRES_PORT`, `POSTGRES_USER` e `POSTGRES_DB`).
+
+Opções úteis:
+
+```bash
+# Ver os dados e a ligação (sem escrever na base de dados)
+python -m data_pipeline.etl.load_lunar_data --dry-run
+
+# Acrescentar em vez de recriar a tabela
+python -m data_pipeline.etl.load_lunar_data --if-exists append
+
+# Escolher tabela/schema ou passar a URL explicitamente
+python -m data_pipeline.etl.load_lunar_data --table public.lunar_sites
+python -m data_pipeline.etl.load_lunar_data --database-url "postgresql://..."
+```
+
+O modo por omissão (`--if-exists replace`) recria a tabela com as três linhas
+iniciais, pelo que deve ser usado apenas para semear a base.
+
+> **Rede IPv4:** a ligação directa `db.<project-ref>.supabase.co:5432` pode
+> resolver apenas para IPv6. Se a rede onde o ETL corre não tiver IPv6, use a
+> URL do **Connection Pooler** (IPv4) do painel Supabase em `DATABASE_URL`; o
+> utilizador passa a ser `postgres.<project-ref>` e a porta `5432` (sessão) ou
+> `6543` (transacção).
+
+```bash
+curl http://127.0.0.1:8000/api/v1/sites/database
+```
+
+```json
+{
+  "sites": [
+    {
+      "name": "Cratera Shackleton",
+      "latitude_deg": -89.9,
+      "longitude_deg": 0.0,
+      "longitude_east_deg": 0.0,
+      "elevation_m": -4200.0,
+      "science_score": 9.8,
+      "description": "Cratera rica em hidrogénio/gelo de água nas bordas.",
+      "source": "NASA LRO / USGS",
+      "is_south_polar": true
+    }
+  ],
+  "total": 1,
+  "table": "lunar_sites",
+  "source": "postgresql"
+}
+```
+
+Se a base estiver inacessível ou a tabela não existir, a API responde `503` com `error.code = "database_unavailable"` em vez de inventar dados.
+
+### Comparação de locais (`POST /api/v1/sites/compare`)
+
+Compara 1..20 locais da tabela `lunar_sites`. Os identificadores podem ser nomes
+(tolerantes a maiúsculas/minúsculas e acentos) ou o slug/ID derivado do nome,
+como `cratera-shackleton`. O campo canónico é `sites`; `site_ids`, `site_names`
+e `identifiers` também são aceites, bem como um array JSON simples.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/sites/compare \
+  -H 'Content-Type: application/json' \
+  -d '{"sites": ["Cratera Shackleton", "Malapert Mountain"]}'
+```
+
+A resposta inclui:
+
+- `matrix`: uma linha por local, com `rank`, elevação, score científico e
+  diferenças face ao menor valor de elevação e ao melhor score;
+- `elevation_comparison` / `elevation_difference_m`: extremos e amplitude de
+  elevação (máximo menos mínimo);
+- `science_score_comparison` / `science_score_difference`: extremos, média e
+  amplitude dos scores;
+- `best_site`, `recommendation` e `recommendation_text`: melhor local e
+  justificação (o score científico é o critério principal; elevação e região
+  polar são usados como desempate);
+- `missing`: identificadores não encontrados (são excluídos e assinalados em
+  `caveats`). Se nenhum for encontrado, a API responde `404`.
+
+```json
+{
+  "requested_identifiers": ["Cratera Shackleton", "Malapert Mountain"],
+  "elevation_difference_m": 9200.0,
+  "science_score_difference": 0.6,
+  "best_site": {"id": "cratera-shackleton", "name": "Cratera Shackleton", "...": "..."},
+  "recommendation": {
+    "site_name": "Cratera Shackleton",
+    "reason": "Cratera Shackleton has the highest science score (9.80) ...",
+    "confidence": "high"
+  },
+  "matrix": [
+    {
+      "rank": 1,
+      "site_name": "Cratera Shackleton",
+      "elevation_m": -4200.0,
+      "science_score": 9.8,
+      "elevation_difference_from_lowest_m": 0.0,
+      "science_score_difference_from_best": 0.0
+    }
+  ],
+  "missing": [],
+  "caveats": ["..."]
+}
+```
 
 ## Testes e qualidade
 

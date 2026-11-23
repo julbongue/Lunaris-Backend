@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     analysis_store_ttl_seconds: int = 1800
     analysis_store_max_entries: int = 256
 
+    database_url: str | None = None
+    lunar_sites_table: str = "lunar_sites"
+    database_pool_pre_ping: bool = True
     # Basic request protection (reverse proxy/tunnel should still enforce limits).
     max_request_body_bytes: int = 1_000_000
     rate_limit_enabled: bool = True
