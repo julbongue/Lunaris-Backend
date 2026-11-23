@@ -6,6 +6,17 @@ O objectivo do MVP é permitir comparar locais e datas de aterragem na Lua, sobr
 
 > **Princípio do projecto:** não são inventados dados científicos. Quando uma integração ou um modelo ainda não existe, a API devolve uma limitação explícita em vez de um valor simulado.
 
+## Estado para execução local + Cloudflare Tunnel
+
+- **Framework:** FastAPI (`app.main:app`)
+- **Servidor ASGI:** Uvicorn
+- **Prefixo real da API:** `/api/v1` (configurável por `API_V1_PREFIX`)
+- **Porta padrão:** `8000` (`PORT`)
+- **Host padrão:** `0.0.0.0` (`HOST`)
+- **Base de dados PostgreSQL:** **não utilizada** por este backend (não há dependência/configuração/integração no código actual)
+- **Redis:** **não utilizado** por este backend (cache e store são em memória, com TTL configurável)
+- **Motor científico:** seleccionável por `SCIENTIFIC_ENGINE` (`geometric` por defeito; `scientific-lunaris` disponível conforme configuração/provider). O arranque da API não depende de PostgreSQL/Redis; para `scientific-lunaris` com provider `spice` são necessários `spiceypy` e kernels NAIF validados (não incluídos).
+
 ## Arquitectura
 
 ```text
@@ -46,6 +57,16 @@ app/
 │   ├── topography.py
 │   └── sources.py
 └── main.py
+├── api/                     # rotas FastAPI e dependências
+├── core/                    # configuração, cache, excepções
+├── data/                    # dados locais curados (sites, layers, sources)
+├── integrations/            # clientes externos (Horizons, LROC, Moon Trek)
+├── schemas/                 # contratos Pydantic
+├── services/                # domínio, orquestração, motores
+└── main.py                  # aplicação FastAPI, CORS, logging, startup/shutdown
+scripts/                     # arranque, health check, túnel, paragem
+cloudflared/                 # exemplo de configuração Named Tunnel (sem segredos)
+docs/                        # documentação técnica e operacional
 ```
 
 A separação é intencional:
@@ -57,30 +78,58 @@ A separação é intencional:
 
 ## Requisitos
 
-- Python 3.12+
-- pip e venv
+- Ubuntu/Linux com Python 3.12+
+- `pip` e `venv`
+- `curl` (recomendado para scripts de verificação)
+- `cloudflared` apenas se for expor a API via Cloudflare Tunnel
+- Rede de saída para integrações externas quando usadas (ex.: JPL Horizons, LROC, Moon Trek)
 
 ## Instalação
 
 ```bash
+cd /home/jbongue/Documentos/Lunaris-Backend
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-dev.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
 cp .env.example .env
 ```
 
 > Se já existir uma pasta `.env/` (por exemplo, uma virtualenv criada com esse nome), renomeie-a para `.venv/` ou use variáveis de ambiente. A aplicação só carrega `.env` quando este for um ficheiro regular.
 
-## Executar
+## Configuração de ambiente
 
-```bash
-uvicorn app.main:app --reload
+Edite `.env` conforme o ambiente. Variáveis principais:
+
+| Variável | Descrição | Exemplo/padrão |
+| --- | --- | --- |
+| `HOST` | Host de escuta do Uvicorn | `0.0.0.0` |
+| `PORT` | Porta de escuta do Uvicorn | `8000` |
+| `DEBUG` | Modo debug (não recomendado publicamente) | `false` |
+| `API_V1_PREFIX` | Prefixo da API | `/api/v1` |
+| `LOG_LEVEL` | Nível de log (`DEBUG`, `INFO`, `WARNING`, ...) | `INFO` |
+| `CORS_ORIGINS` | Origens permitidas (CSV ou JSON array) | `https://app.vercel.app,http://localhost:3000` |
+| `SCIENTIFIC_ENGINE` | Motor científico (`geometric`, `scientific-lunaris`, ...) | `geometric` |
+| `SCIENTIFIC_EPHEMERIS_PROVIDER` | Provider do motor científico | `mock` |
+| `MAX_REQUEST_BODY_BYTES` | Limite de tamanho do body (defesa básica) | `1000000` |
+| `RATE_LIMIT_*` | Rate limiting em memória (defesa básica) | ver `.env.example` |
+| `TRUST_PROXY_HEADERS` | Confiar em `X-Forwarded-For` (apenas atrás de proxy/túnel confiável) | `false` |
+
+### CORS (Vercel + local)
+
+Exemplo:
+
+```env
+CORS_ORIGINS=https://meu-frontend.vercel.app,http://localhost:3000,http://localhost:5173
 ```
 
-- Swagger UI: <http://127.0.0.1:8000/docs>
-- OpenAPI: <http://127.0.0.1:8000/openapi.json>
+Regras implementadas:
 
-## Endpoints principais
+- Aceita lista separada por vírgulas **ou** JSON array.
+- Não permite wildcard `*`.
+- `allow_credentials=false`.
+- Métodos explícitos permitidos: `GET, POST, PUT, PATCH, DELETE, OPTIONS`.
+- Headers permitidos via CORS: `*` (adequado para preflight típico de `Content-Type`, `Authorization`, etc.).
 
 | Método | Rota | Descrição |
 | --- | --- | --- |
@@ -96,6 +145,135 @@ uvicorn app.main:app --reload
 | `GET` | `/api/v1/topography/layers` | Catálogo de camadas WMS/WMTS verificadas. |
 | `POST` | `/api/v1/topography/context` | URLs de mapa e contexto topográfico para um local. |
 | `GET` | `/api/v1/sources` | Fontes externas e estado de integração. |
+## Arranque local
+
+### Opção A — Uvicorn directo
+
+```bash
+source .venv/bin/activate
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --log-level info
+```
+
+### Opção B — Script de arranque
+
+```bash
+./scripts/start_backend.sh
+```
+
+O script:
+
+- carrega `.env` (se existir);
+- verifica dependências Python essenciais (`fastapi`, `uvicorn`, `pydantic-settings`, `httpx`);
+- inicia em background;
+- aguarda e verifica `GET /api/v1/health`;
+- falha com erro claro se o processo não iniciar ou o health check não responder.
+
+Logs/PID padrão: `.lunaris-backend.log`, `.lunaris-backend.pid`.
+
+## Verificação da API
+
+### Script
+
+```bash
+./scripts/check_health.sh
+# ou contra URL pública/túnel:
+BASE_URL=https://<seu-host> ./scripts/check_health.sh
+```
+
+### Comandos manuais
+
+```bash
+curl -fsS http://127.0.0.1:8000/
+curl -fsS http://127.0.0.1:8000/api/v1/health
+curl -fsS http://127.0.0.1:8000/api/v1/capabilities
+```
+
+- Swagger UI: <http://127.0.0.1:8000/docs>
+- OpenAPI: <http://127.0.0.1:8000/openapi.json>
+
+## Configuração de PostgreSQL, Redis e motor científico
+
+### PostgreSQL e Redis
+
+- **Estado actual:** não requeridos/não integrados neste backend.
+- **Não expor:** se forem adicionados no futuro ao ambiente local, mantenha-os em `localhost`/rede privada e **nunca** os encaminhe pelo Cloudflare Tunnel.
+- **Dados locais usados:** ficheiros JSON em `app/data/` (sites, topography layers, sources).
+
+### Motor científico
+
+- **Padrão:** `SCIENTIFIC_ENGINE=geometric` (baseline do MVP, sem dependências científicas adicionais).
+- **Alternativo:** `SCIENTIFIC_ENGINE=scientific-lunaris` com `SCIENTIFIC_EPHEMERIS_PROVIDER=mock|horizons-observer|spice|horizons-vectors` conforme disponibilidade/configuração.
+- **SPICE:** requer `spiceypy` e kernels NAIF válidos (`SPICE_KERNEL_PATHS`); não são incluídos nem validados automaticamente por este repositório.
+- A API preserva contratos e limitações explícitas quando capacidades não estão disponíveis.
+
+## Exposição via Cloudflare Tunnel
+
+Documentação detalhada: [`docs/cloudflare-tunnel.md`](docs/cloudflare-tunnel.md)  
+Exemplo de Named Tunnel: [`cloudflared/config.example.yml`](cloudflared/config.example.yml)
+
+### Desenvolvimento rápido (Quick Tunnel)
+
+```bash
+./scripts/start_backend.sh
+cloudflared tunnel --url http://localhost:8000
+# ou: ./scripts/start_tunnel.sh quick
+```
+
+- URL pública temporária (`*.trycloudflare.com`) muda a cada execução.
+- Útil para testes; **não** é configuração persistente de produção.
+
+### Configuração persistente (Named Tunnel)
+
+> **Acção manual necessária (não automatizável por este repositório):** autenticação na sua conta Cloudflare, criação do túnel, associação DNS/domínio e gestão de credenciais.
+
+Comandos exactos (substitua placeholders):
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create lunaris-backend
+cloudflared tunnel route dns lunaris-backend api.example.com
+cp cloudflared/config.example.yml cloudflared/config.yml
+# editar cloudflared/config.yml com <TUNNEL_UUID>, credentials-file e hostname
+./scripts/start_backend.sh
+./scripts/start_tunnel.sh named
+# ou: cloudflared tunnel --config cloudflared/config.yml run
+```
+
+Teste público:
+
+```bash
+curl https://api.example.com/api/v1/health
+```
+
+## Endpoints principais
+
+| Dependência | Justificação |
+| --- | --- |
+| `fastapi` | Framework da API e OpenAPI. |
+| `uvicorn[standard]` | Servidor ASGI. |
+| `pydantic` | Validação e serialização dos contratos da API. |
+| `pydantic-settings` | Configuração por ambiente/`.env`. |
+| `httpx` | Cliente HTTP assíncrono para o JPL Horizons. |
+| `SQLAlchemy` | Acesso à base PostgreSQL (tabela `lunar_sites`). |
+| `psycopg2-binary` | Driver PostgreSQL usado pelo SQLAlchemy. |
+| `pandas` | Apenas ETL: escrita dos dados iniciais com `DataFrame.to_sql` (`data_pipeline/requirements.txt`). |
+| `python-dotenv` | Apenas ETL: leitura do `.env` pelo script de seed. |
+| `pytest` | Testes automatizados. |
+| `ruff` | Lint e formatação. |
+| Método | Rota | Descrição |
+| --- | --- | --- |
+| `GET` | `/` | Entrada da API |
+| `GET` | `/api/v1/health` | Estado do serviço e motor activo (verifica carregamento de dados locais) |
+| `GET` | `/api/v1/capabilities` | Capacidades/configuração reportada |
+| `GET` | `/api/v1/sites` | Lista de locais curados |
+| `GET` | `/api/v1/sites/{site_id}` | Detalhes de um local |
+| `POST` | `/api/v1/sites/resolve` | Normaliza coordenadas lunares personalizadas |
+| `POST` | `/api/v1/analysis` | Analisa um local e intervalo temporal |
+| `GET` | `/api/v1/analysis/{analysis_id}` | Recupera uma análise em cache (TTL) |
+| `POST` | `/api/v1/scenarios/compare` | Compara cenários |
+| `GET` | `/api/v1/topography/layers` | Catálogo de camadas WMS/WMTS |
+| `POST` | `/api/v1/topography/context` | Contexto/URLs de mapa para um local |
+| `GET` | `/api/v1/sources` | Fontes externas e estado de integração |
 
 ### Exemplo: análise
 
@@ -112,111 +290,20 @@ curl -X POST http://127.0.0.1:8000/api/v1/analysis \
   }'
 ```
 
-### Exemplo: coordenadas personalizadas
+## Segurança para exposição pública
 
-```json
-{
-  "site": {
-    "type": "coordinates",
-    "name": "Meu local polar",
-    "latitude_deg": -88.5,
-    "longitude_deg": 15.0,
-    "elevation_m": 500.0
-  },
-  "start_time": "2026-11-15T00:00:00Z",
-  "stop_time": "2026-11-16T00:00:00Z",
-  "step_minutes": 60
-}
-```
+Medidas implementadas/configuráveis:
 
-`longitude_deg` é **east-positive** no intervalo `[-180, 180]`. A resposta inclui também `longitude_east_deg` no intervalo `[0, 360)`, que é a convenção usada pelo JPL Horizons.
+- CORS restrito a origens explicitamente configuradas (sem wildcard, sem credenciais).
+- Validação de inputs via Pydantic/FastAPI nos contratos existentes.
+- Limite de tamanho de body por `Content-Length` (`MAX_REQUEST_BODY_BYTES`, defesa básica).
+- Rate limiting em memória por IP (`RATE_LIMIT_*`, defesa básica; reforçar no proxy/Cloudflare se necessário).
+- Em `DEBUG=false`, erros não tratados devolvem mensagem genérica sem stack trace.
+- Não exposição de variáveis de ambiente/segredos por endpoints.
+- Timeouts configuráveis para integrações externas (ex.: JPL Horizons).
+- Endpoints e contratos existentes preservados; não desactivar autenticação existente (nenhuma autenticação específica foi removida/introduzida fora do existente).
 
-## Fontes externas e integração real
-
-| Fonte | Acesso programático | Estado no MVP |
-| --- | --- | --- |
-| **JPL Horizons** | REST API pública (`https://ssd.jpl.nasa.gov/api/horizons.api`) | **Integrado**. Tabelas `OBSERVER` com `QUANTITIES='4'` e `CENTER='coord@301'` para obter azimute/elevação topocêntricos do Sol e da Terra a partir de um local lunar. |
-| **LROC QuickMap / Lunaserv** | OGC WMS público (`https://wms.im-ldi.com/lroc/wms`) | **Integrado como camadas de mapa**. Não existe API pública de análise pontual; as camadas DEM numéricas respondem `LayerNotQueryable` a `GetFeatureInfo`, pelo que a API não inventa elevações. |
-| **NASA Moon Trek** | OGC WMTS + catálogo Trek REST | **Integrado como camadas de mapa**. Catálogo curado de camadas verificadas; os tiles são servidos por WMTS. |
-| **CSA Moon Exploration** | Portal web | **Não integrado**. Não foi identificada API pública; é referência educativa. |
-| **NAIF SPICE** | Kernels SPICE | **Planeado** para o motor científico completo. |
-| **PDS Geosciences** | Arquivos PDS | **Planeado** para ingestão local de DEMs e modelos de horizonte. |
-
-O endpoint `GET /api/v1/sources` devolve esta informação de forma estruturada.
-
-## Modelo científico do MVP
-
-O motor activo chama-se `geometric-altaz-threshold` e é deliberadamente simples:
-
-1. O JPL Horizons devolve amostras de azimute/elevação do Sol e da Terra, vistas de um observador na superfície lunar.
-2. Uma amostra é considerada iluminada se a elevação do Sol for `>= sun_elevation_deg`.
-3. Uma amostra é considerada com ligação directa se a elevação da Terra for `>= earth_elevation_deg`.
-4. As janelas são construídas a partir de amostras contíguas.
-
-Limitações explícitas (também devolvidas em cada análise):
-
-- não há modelo de horizonte topográfico nem ray tracing de sombras;
-- não há modelo de potência, bateria, térmica ou link budget;
-- as fronteiras das janelas são instantes amostrados, não tempos exactos de rise/set;
-- a elevação do local é assumida como `0 km` quando não é fornecida;
-- os resultados são preliminares e não servem para decisões críticas de missão.
-
-### Substituir o motor científico
-
-A interface está em `app/services/engine/base.py`:
-
-```python
-class ScientificEngine(Protocol):
-    name: str
-    version: str
-
-    def analyze(self, data: EngineInput) -> EngineOutput: ...
-```
-
-Para adicionar o motor completo:
-
-1. criar, por exemplo, `app/services/engine/spice.py`;
-2. implementar `ScientificEngine`;
-3. registar em `app/services/engine/registry.py`;
-4. seleccionar com `SCIENTIFIC_ENGINE=spice`.
-
-A API, os schemas e os endpoints não precisam de mudar.
-
-## Dependências
-
-### Instaladas
-
-| Dependência | Justificação |
-| --- | --- |
-| `fastapi` | Framework da API e OpenAPI. |
-| `uvicorn[standard]` | Servidor ASGI. |
-| `pydantic` | Validação e serialização dos contratos da API. |
-| `pydantic-settings` | Configuração por ambiente/`.env`. |
-| `httpx` | Cliente HTTP assíncrono para o JPL Horizons. |
-| `SQLAlchemy` | Acesso à base PostgreSQL (tabela `lunar_sites`). |
-| `psycopg2-binary` | Driver PostgreSQL usado pelo SQLAlchemy. |
-| `pandas` | Apenas ETL: escrita dos dados iniciais com `DataFrame.to_sql` (`data_pipeline/requirements.txt`). |
-| `python-dotenv` | Apenas ETL: leitura do `.env` pelo script de seed. |
-| `pytest` | Testes automatizados. |
-| `ruff` | Lint e formatação. |
-
-### Deliberadamente adiadas
-
-| Dependência | Motivo |
-| --- | --- |
-| `spiceypy` | Só é necessária quando o motor SPICE for implementado. O JPL Horizons já fornece azimute/elevação suficientes para o MVP. |
-| `astropy` | Não é necessária para consultar o Horizons nem para a baseline geométrica. |
-| `numpy` / `scipy` | A baseline usa operações simples sobre listas. Interpolação e processamento científico pertencem ao motor futuro. |
-
-Não instalar estas dependências sem uma necessidade concreta do motor científico.
-
-## Dados locais
-
-- `app/data/sites.json`: locais curados com coordenadas publicadas, fonte e precisão aproximada. As coordenadas não são apresentadas como “landing pads” certificados.
-- `app/data/topography_layers.json`: camadas verificadas em 2026-11-14, com URLs de WMS/WMTS e notas de limitação.
-- `app/data/sources.json`: inventário das fontes e do respectivo estado de integração.
-
-Para adicionar um local, inclua uma entrada em `sites.json` com `id`, coordenadas, região, tipo, descrição e `source_url`.
+> **Nota:** o backend expõe apenas HTTP na porta configurada; PostgreSQL/Redis não fazem parte deste serviço e não devem ser expostos.
 
 ### PostgreSQL (`lunar_sites`)
 
@@ -351,21 +438,49 @@ A resposta inclui:
 ## Testes e qualidade
 
 ```bash
-pytest
-ruff check .
-ruff format --check .
+source .venv/bin/activate
+python -m pytest
+python -m ruff check .
+python -m ruff format --check .
 ```
 
-Os testes de API usam um cliente Horizons falso e determinístico. Nenhum teste faz chamadas de rede.
+Os testes de API usam clientes/fakes determinísticos quando aplicável; não introduza mocks na execução de produção.
+
+## Resolução de problemas
+
+- **`ModuleNotFoundError`/dependências em falta:** instale `requirements-dev.txt` no venv activo.
+- **Porta em uso:** altere `PORT` ou termine o processo que usa a porta.
+- **Health falha no arranque:** verifique logs (`.lunaris-backend.log`), integridade de `app/data/*.json` e configuração de `SCIENTIFIC_ENGINE`/providers.
+- **Erro CORS no browser:** confirme origem exacta em `CORS_ORIGINS` e reinicie o backend.
+- **`cloudflared` não encontrado:** instale o binário oficial; o script `start_tunnel.sh` falha com instrução.
+- **Quick Tunnel não dá URL estável:** comportamento esperado; use Named Tunnel.
+- **429 / 413:** ajuste limites apenas se seguro (`RATE_LIMIT_*`, `MAX_REQUEST_BODY_BYTES`) e considere protecções adicionais no Cloudflare.
+- **Falhas ao consultar Horizons:** dependência externa/latência/rede; valide `HORIZONS_*` e conectividade.
+
+## Encerramento controlado
+
+```bash
+./scripts/stop_backend.sh          # pára túnel (se iniciado por script) e backend
+./scripts/stop_backend.sh backend  # apenas backend
+./scripts/stop_backend.sh tunnel   # apenas túnel
+```
+
+## Documentação adicional
+
+- [`docs/cloudflare-tunnel.md`](docs/cloudflare-tunnel.md) — exposição via Cloudflare Tunnel
+- [`docs/frontend/contract.md`](docs/frontend/contract.md) — contrato frontend
+- [`docs/engine/*`](docs/engine) — motor e contratos
+- [`docs/scientific/IMPLEMENTATION_STATUS.md`](docs/scientific/IMPLEMENTATION_STATUS.md) — estado científico
+- `GET /docs` e `GET /openapi.json` — documentação interactiva da API em execução
 
 ## Estrutura de resposta de erro
 
 ```json
 {
   "error": {
-    "code": "upstream_error",
-    "message": "JPL Horizons returned HTTP 503 for Sun.",
-    "details": {"service": "JPL Horizons", "target": "Sun", "status_code": 503}
+    "code": "bad_request",
+    "message": "Mensagem de erro",
+    "details": {}
   }
 }
 ```
